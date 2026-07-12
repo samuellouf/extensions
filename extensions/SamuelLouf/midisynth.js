@@ -1,7 +1,8 @@
 // Name: MIDI Synthesizer
 // ID: midisynth
 // Description: A MIDI synthesizer for TurboWarp.
-// By: samuellouf <https://github.com/samuellouf>
+// By: samuellouf <https://scratch.mit.edu/users/samuellouf/>
+// License: MIT
 
 (function (Scratch) {
   "use strict";
@@ -12,6 +13,7 @@
     throw new Error("This extension must run unsandboxed");
   }
 
+  
   var SpessaSynth_core = (() => {
     //#region src/utils/byte_functions/big_endian.ts
     /**
@@ -22475,7 +22477,7 @@
             text: Scratch.translate("note on [note] at velocity [velocity] in channel [channel]"),
             arguments: {
               "note": {
-                type: Scratch.ArgumentType.NUMBER,
+                type: Scratch.ArgumentType.NOTE,
                 defaultValue: 60
               },
               "velocity": {
@@ -22494,7 +22496,7 @@
             text: Scratch.translate("note off [note] at velocity [velocity] in channel [channel]"),
             arguments: {
               "note": {
-                type: Scratch.ArgumentType.NUMBER,
+                type: Scratch.ArgumentType.NOTE,
                 defaultValue: 60
               },
               "velocity": {
@@ -22513,7 +22515,7 @@
             text: Scratch.translate("play note [note] at velocity [velocity] for [beats] beats in channel [channel]"),
             arguments: {
               "note": {
-                type: Scratch.ArgumentType.NUMBER,
+                type: Scratch.ArgumentType.NOTE,
                 defaultValue: 60
               },
               "velocity": {
@@ -22536,7 +22538,7 @@
             text: Scratch.translate("play note [note] at velocity [velocity] for [beats] beats in channel [channel] and wait"),
             arguments: {
               "note": {
-                type: Scratch.ArgumentType.NUMBER,
+                type: Scratch.ArgumentType.NOTE,
                 defaultValue: 60
               },
               "velocity": {
@@ -22550,6 +22552,17 @@
               "channel": {
                 type: Scratch.ArgumentType.NUMBER,
                 defaultValue: 1
+              }
+            }
+          },
+          {
+            opcode: "waitBeats",
+            blockType: Scratch.BlockType.COMMAND,
+            text: Scratch.translate("wait [beats] beats"),
+            arguments: {
+              "beats": {
+                type: Scratch.ArgumentType.NUMBER,
+                defaultValue: 0.25
               }
             }
           },
@@ -22664,7 +22677,7 @@
             }
           },
           {
-            opcode: "sendControlChange",
+            opcode: "sendControlChangeMenu",
             blockType: Scratch.BlockType.COMMAND,
             text: Scratch.translate("send [function] control change with value [value] to channel [channel]"),
             arguments: {
@@ -22684,15 +22697,17 @@
             }
           },
           {
-            opcode: "sendBoolControlChange",
+            opcode: "sendControlChange",
             blockType: Scratch.BlockType.COMMAND,
-            text: Scratch.translate("[value] [function] control change in channel [channel]"),
+            text: Scratch.translate("send [value] to control change [cc] in channel [channel]"),
             arguments: {
               "value": {
-                type: Scratch.ArgumentType.STRING
+                type: Scratch.ArgumentType.NUMBER,
+                defaultValue: 1
               },
-              "function": {
-                type: Scratch.ArgumentType.STRING
+              "cc": {
+                type: Scratch.ArgumentType.NUMBER,
+                defaultValue: 1
               },
               "channel": {
                 type: Scratch.ArgumentType.NUMBER,
@@ -23915,7 +23930,7 @@
         case "base64":
           data = "data:/octet-stream;base64," + data;
         case "URL":
-          const response = await fetch(data);
+          const response = await Scratch.fetch(data);
           arrayBuffer = await response.arrayBuffer();
           break;
         case "hex":
@@ -23992,39 +24007,43 @@
       this.SpessaSynth.synth.noteOff(args.channel - 1, args.note, args.velocity);
     }
 
-    async playNoteChannel(args) {
-      if (!this.SpessaSynth.initialized) return;
-      var progress = 0;
-      var tick = 100;
+    async waitBeats(args, tempo_func = null){
+      const beats = Number(args?.beats ?? 0);
+      if (!Number.isFinite(beats) || beats <= 0) return;
 
-      this.SpessaSynth.synth.noteOn(args.channel - 1, args.note, args.velocity);
-
-      while (progress < args.beats){
-        progress += this.tempo * tick / 60000;
-        await delay(tick);
+      let accumulatedBeats = 0;
+      let lastCheck = performance.now();
+      while (accumulatedBeats < beats) {
+        const now = performance.now();
+        const bpm = Number(typeof tempo_func == "function" ? tempo_func() : this.tempo);
+        const deltaMs = now - lastCheck;
+        lastCheck = now;
+        accumulatedBeats += (deltaMs * bpm) / 60000;
+        if (accumulatedBeats >= beats) break;
+        const remainingBeats = beats - accumulatedBeats;
+        const remainingMs = (remainingBeats * 60000) / (bpm || 120);
+        const sleepMs = Math.max(1, Math.min(Math.round(remainingMs), 10));
+        await delay(sleepMs);
       }
-      
-      this.SpessaSynth.synth.noteOff(args.channel - 1, args.note, args.velocity);
     }
 
-    playNoteChannelWait(args) {
+    playNoteChannel(args) {
       if (!this.SpessaSynth.initialized) return;
-      return new Promise((resolve) => {
-        var progress = 0;
-        var tick = 100;
+      const synth = this.SpessaSynth.synth;
+      const waitBeats = this.waitBeats;
+      const tempo = () => this.tempo;
+      (async function (){
+        synth.noteOn(args.channel - 1, args.note, args.velocity);
+        await waitBeats({ beats: args.beats }, tempo);
+        synth.noteOff(args.channel - 1, args.note, args.velocity);
+      })();
+    }
 
-        this.SpessaSynth.synth.noteOn(args.channel - 1, args.note, args.velocity);
-
-        const interval = setInterval(() => {
-          progress += this.tempo * tick / 60000;
-
-          if (progress >= args.beats) {
-            clearInterval(interval);
-            this.SpessaSynth.synth.noteOff(args.channel - 1, args.note, args.velocity);
-            resolve();
-          }
-        }, tick);
-      });
+    async playNoteChannelWait(args) {
+      if (!this.SpessaSynth.initialized) return;
+      this.SpessaSynth.synth.noteOn(args.channel - 1, args.note, args.velocity);
+      await this.waitBeats({ beats: args.beats });
+      this.SpessaSynth.synth.noteOff(args.channel - 1, args.note, args.velocity);
     }
 
     // ---
@@ -24061,12 +24080,12 @@
       this.SpessaSynth.synth.pitchWheel(args.channel - 1, args.value);
     }
 
-    sendControlChange(args){
+    sendControlChangeMenu(args){
       this.SpessaSynth.synth.controllerChange(args.channel - 1, args.function, args.value);
     }
 
-    sendBoolControlChange(args){
-      console.log("Hi")
+    sendControlChange(args){
+      this.SpessaSynth.synth.controllerChange(args.channel - 1, args.cc - 1, args.value);
     }
 
     muteChannel(args){
